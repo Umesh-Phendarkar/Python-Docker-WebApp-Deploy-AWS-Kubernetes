@@ -5,18 +5,22 @@ on:
     branches:
       - main
 
-jobs:
+  workflow_dispatch:
 
+jobs:
   build-and-deploy:
 
     runs-on: ubuntu-latest
+
+    env:
+      IMAGE_NAME: python-app
 
     steps:
 
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Login DockerHub
+    - name: Login to Docker Hub
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
@@ -25,45 +29,45 @@ jobs:
     - name: Build Docker Image
       run: |
         docker build \
-        -t ${{ secrets.DOCKER_USERNAME }}/python-app:${{ github.sha }} \
-        -t ${{ secrets.DOCKER_USERNAME }}/python-app:latest .
+          -t ${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:${{ github.sha }} \
+          -t ${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:latest .
 
     - name: Push Docker Images
       run: |
-        docker push ${{ secrets.DOCKER_USERNAME }}/python-app:${{ github.sha }}
-        docker push ${{ secrets.DOCKER_USERNAME }}/python-app:latest
+        docker push ${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:${{ github.sha }}
+        docker push ${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:latest
 
-    - name: Copy Kubernetes Files
+    - name: Copy Kubernetes Manifests
       uses: appleboy/scp-action@v0.1.7
       with:
         host: ${{ secrets.K8S_MASTER_HOST }}
         username: ${{ secrets.K8S_MASTER_USER }}
         key: ${{ secrets.K8S_MASTER_SSH_KEY }}
         source: "k8s/*"
-        target: "/home/ec2-user/train-schedule"
+        target: "/home/ec2-user/python-app"
 
-    - name: Deploy to Kubernetes
-      uses: appleboy/ssh-action@v1
+    - name: Deploy Application
+      uses: appleboy/ssh-action@v1.2.0
       with:
         host: ${{ secrets.K8S_MASTER_HOST }}
         username: ${{ secrets.K8S_MASTER_USER }}
         key: ${{ secrets.K8S_MASTER_SSH_KEY }}
-
         script: |
 
-          cd /home/ec2-user/train-schedule
+          cd /home/ec2-user/python-app
 
-          sed -i "s|IMAGE_PLACEHOLDER|${{ secrets.DOCKER_USERNAME }}/train-schedule:${{ github.sha }}|g" k8s/deployment.yaml
-
-          kubectl apply -f k8s/namespace.yaml
+          sed -i "s|IMAGE_PLACEHOLDER|${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:${{ github.sha }}|g" k8s/deployment.yaml
 
           kubectl apply -f k8s/deployment.yaml
-
           kubectl apply -f k8s/service.yaml
 
-          kubectl rollout status deployment/python-app \
-          --timeout=300s
+          kubectl rollout status deployment/python-app --timeout=300s
 
-          kubectl get pods
+          echo "========== Pods =========="
+          kubectl get pods -o wide
 
+          echo "========== Services =========="
           kubectl get svc
+
+          echo "========== Deployment =========="
+          kubectl get deployment
