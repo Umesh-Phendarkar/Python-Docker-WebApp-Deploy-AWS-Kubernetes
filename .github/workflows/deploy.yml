@@ -1,4 +1,4 @@
-name: Kubernetes Deployment
+name: Build and Deploy Python Application
 
 on:
   push:
@@ -8,16 +8,14 @@ on:
   workflow_dispatch:
 
 jobs:
+
   build-and-deploy:
 
     runs-on: ubuntu-latest
 
-    env:
-      IMAGE_NAME: python-app
-
     steps:
 
-    - name: Checkout Code
+    - name: Checkout Source
       uses: actions/checkout@v4
 
     - name: Login to Docker Hub
@@ -29,15 +27,15 @@ jobs:
     - name: Build Docker Image
       run: |
         docker build \
-          -t ${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:${{ github.sha }} \
-          -t ${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:latest .
+          -t ${{ secrets.DOCKER_USERNAME }}/python-app:${{ github.sha }} \
+          -t ${{ secrets.DOCKER_USERNAME }}/python-app:latest .
 
     - name: Push Docker Images
       run: |
-        docker push ${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:${{ github.sha }}
-        docker push ${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:latest
+        docker push ${{ secrets.DOCKER_USERNAME }}/python-app:${{ github.sha }}
+        docker push ${{ secrets.DOCKER_USERNAME }}/python-app:latest
 
-    - name: Copy Kubernetes Manifests
+    - name: Copy Kubernetes Files
       uses: appleboy/scp-action@v0.1.7
       with:
         host: ${{ secrets.K8S_MASTER_HOST }}
@@ -46,7 +44,7 @@ jobs:
         source: "k8s/*"
         target: "/home/ec2-user/python-app"
 
-    - name: Deploy Application
+    - name: Deploy to Kubernetes
       uses: appleboy/ssh-action@v1.2.0
       with:
         host: ${{ secrets.K8S_MASTER_HOST }}
@@ -56,18 +54,19 @@ jobs:
 
           cd /home/ec2-user/python-app
 
-          sed -i "s|IMAGE_PLACEHOLDER|${{ secrets.DOCKER_USERNAME }}/${IMAGE_NAME}:${{ github.sha }}|g" k8s/deployment.yaml
-
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
+          kubectl set image deployment/python-app \
+          python-app=${{ secrets.DOCKER_USERNAME }}/python-app:${{ github.sha }}
+
           kubectl rollout status deployment/python-app --timeout=300s
 
-          echo "========== Pods =========="
+          echo "================ Pods ================"
           kubectl get pods -o wide
 
-          echo "========== Services =========="
-          kubectl get svc
-
-          echo "========== Deployment =========="
+          echo "============== Deployment ============"
           kubectl get deployment
+
+          echo "=============== Services ============="
+          kubectl get svc
