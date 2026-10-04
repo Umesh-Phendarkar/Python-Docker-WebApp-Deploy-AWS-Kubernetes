@@ -7,13 +7,10 @@ on:
 
   workflow_dispatch:
 
-env:
-  DOCKER_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/python-webapp
-
 jobs:
 
   # ============================================================
-  # JOB 1 - BUILD AND PUSH IMAGE TO DOCKER HUB
+  # BUILD AND PUSH DOCKER IMAGE
   # ============================================================
 
   build:
@@ -27,19 +24,14 @@ jobs:
 
     steps:
 
-      # ----------------------------------------------------------
-      # Checkout source code
-      # ----------------------------------------------------------
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
       # ----------------------------------------------------------
-      # Validate Docker Hub configuration
+      # Validate Docker Hub credentials
       # ----------------------------------------------------------
 
-      - name: Validate Docker Hub configuration
+      - name: Validate Docker Hub credentials
         shell: bash
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -47,24 +39,20 @@ jobs:
         run: |
           set -e
 
-          echo "Checking Docker Hub configuration..."
-
           if [ -z "$DOCKERHUB_USERNAME" ]; then
-            echo "ERROR: DOCKERHUB_USERNAME GitHub Secret is empty or missing."
+            echo "ERROR: DOCKERHUB_USERNAME is missing."
             exit 1
           fi
 
           if [ -z "$DOCKERHUB_TOKEN" ]; then
-            echo "ERROR: DOCKERHUB_TOKEN GitHub Secret is empty or missing."
+            echo "ERROR: DOCKERHUB_TOKEN is missing."
             exit 1
           fi
 
-          echo "Docker Hub username is configured."
-          echo "Docker Hub token is configured."
-
+          echo "Docker Hub credentials are configured."
 
       # ----------------------------------------------------------
-      # Login to Docker Hub
+      # Docker Hub login
       # ----------------------------------------------------------
 
       - name: Login to Docker Hub
@@ -75,17 +63,14 @@ jobs:
         run: |
           set -e
 
-          echo "Logging in to Docker Hub..."
-
           echo "$DOCKERHUB_TOKEN" | docker login \
             --username "$DOCKERHUB_USERNAME" \
             --password-stdin
 
           echo "Docker Hub login successful."
 
-
       # ----------------------------------------------------------
-      # Build Docker image
+      # Build image
       # ----------------------------------------------------------
 
       - name: Build Docker image
@@ -96,25 +81,17 @@ jobs:
           set -e
 
           IMAGE="docker.io/${DOCKERHUB_USERNAME}/python-webapp"
-          TAG="${GITHUB_SHA}"
 
-          echo "=========================================="
-          echo "Building Docker Image"
-          echo "=========================================="
-          echo "Image: $IMAGE"
-          echo "Tag:   $TAG"
-          echo "=========================================="
+          echo "Building:"
+          echo "$IMAGE:${GITHUB_SHA}"
 
           docker build \
-            --tag "$IMAGE:$TAG" \
-            --tag "$IMAGE:latest" \
+            -t "$IMAGE:${GITHUB_SHA}" \
+            -t "$IMAGE:latest" \
             .
 
-          echo "Docker image built successfully."
-
-
       # ----------------------------------------------------------
-      # Push Docker image to Docker Hub
+      # Push image
       # ----------------------------------------------------------
 
       - name: Push Docker image
@@ -125,21 +102,15 @@ jobs:
           set -e
 
           IMAGE="docker.io/${DOCKERHUB_USERNAME}/python-webapp"
-          TAG="${GITHUB_SHA}"
 
-          echo "=========================================="
-          echo "Pushing Docker Image"
-          echo "=========================================="
-
-          docker push "$IMAGE:$TAG"
+          docker push "$IMAGE:${GITHUB_SHA}"
 
           docker push "$IMAGE:latest"
 
           echo "Docker images pushed successfully."
 
-
       # ----------------------------------------------------------
-      # Set image output
+      # Export image
       # ----------------------------------------------------------
 
       - name: Set image output
@@ -152,14 +123,9 @@ jobs:
 
           echo "image=$IMAGE:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-          echo "=========================================="
-          echo "Image for Kubernetes deployment:"
-          echo "$IMAGE:${GITHUB_SHA}"
-          echo "=========================================="
-
 
   # ============================================================
-  # JOB 2 - DEPLOY TO AWS KUBEADM KUBERNETES
+  # DEPLOY TO KUBEADM KUBERNETES
   # ============================================================
 
   deploy:
@@ -173,13 +139,8 @@ jobs:
 
     steps:
 
-      # ----------------------------------------------------------
-      # Checkout repository
-      # ----------------------------------------------------------
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
 
       # ----------------------------------------------------------
       # Install kubectl
@@ -190,18 +151,16 @@ jobs:
         with:
           version: latest
 
-
-      # ----------------------------------------------------------
-      # Verify kubectl
-      # ----------------------------------------------------------
-
       - name: Verify kubectl
         run: |
           kubectl version --client
 
-
       # ----------------------------------------------------------
-      # Configure Kubernetes kubeconfig
+      # Configure RAW kubeconfig
+      #
+      # IMPORTANT:
+      # KUBE_CONFIG secret must contain the actual kubeconfig YAML.
+      # It must NOT be Base64 encoded.
       # ----------------------------------------------------------
 
       - name: Configure kubeconfig
@@ -216,18 +175,23 @@ jobs:
           echo "=========================================="
 
           if [ -z "$KUBE_CONFIG" ]; then
-            echo "ERROR: KUBE_CONFIG GitHub Secret is empty or missing."
+            echo "ERROR: KUBE_CONFIG secret is missing."
             exit 1
           fi
 
           mkdir -p "$HOME/.kube"
 
-          echo "$KUBE_CONFIG" | base64 --decode > "$HOME/.kube/config"
+          printf '%s' "$KUBE_CONFIG" > "$HOME/.kube/config"
 
           chmod 600 "$HOME/.kube/config"
 
-          echo "Kubeconfig created successfully."
+          echo "Kubeconfig file created."
 
+          echo "Validating kubeconfig..."
+
+          kubectl config view --minify >/dev/null
+
+          echo "Kubeconfig format is valid."
 
       # ----------------------------------------------------------
       # Test Kubernetes connection
@@ -251,19 +215,15 @@ jobs:
 
           kubectl get nodes -o wide
 
-
       # ----------------------------------------------------------
       # Apply Deployment
       # ----------------------------------------------------------
 
       - name: Apply Kubernetes Deployment
         run: |
-          echo "Applying Kubernetes Deployment..."
-
           kubectl apply \
             -f k8s/deployment.yaml \
             -n default
-
 
       # ----------------------------------------------------------
       # Apply Service
@@ -271,51 +231,42 @@ jobs:
 
       - name: Apply Kubernetes Service
         run: |
-          echo "Applying Kubernetes Service..."
-
           kubectl apply \
             -f k8s/service.yaml \
             -n default
 
-
       # ----------------------------------------------------------
-      # Update Docker image
+      # Update image
       # ----------------------------------------------------------
 
       - name: Update Kubernetes image
         env:
           IMAGE: ${{ needs.build.outputs.image }}
         run: |
+          set -e
+
           echo "=========================================="
-          echo "Updating Kubernetes Deployment"
+          echo "Deploying Docker Image"
           echo "=========================================="
 
-          echo "Deployment : python-app"
-          echo "Container  : python-app"
-          echo "Image      : $IMAGE"
+          echo "$IMAGE"
 
           kubectl set image \
             deployment/python-app \
             python-app="$IMAGE" \
             -n default
 
-
       # ----------------------------------------------------------
-      # Verify image
+      # Show image
       # ----------------------------------------------------------
 
       - name: Verify deployment image
         run: |
-          echo "=========================================="
-          echo "Deployment Image"
-          echo "=========================================="
-
           kubectl get deployment python-app \
             -n default \
-            -o jsonpath='{.spec.template.spec.containers[*].image}'
+            -o jsonpath='{.spec.template.spec.containers[*].image'
 
           echo ""
-
 
       # ----------------------------------------------------------
       # Wait for rollout
@@ -323,15 +274,10 @@ jobs:
 
       - name: Wait for rollout
         run: |
-          echo "=========================================="
-          echo "Waiting for rollout"
-          echo "=========================================="
-
           kubectl rollout status \
             deployment/python-app \
             -n default \
             --timeout=300s
-
 
       # ----------------------------------------------------------
       # Verify pods
@@ -340,13 +286,12 @@ jobs:
       - name: Verify pods
         run: |
           echo "=========================================="
-          echo "Kubernetes Pods"
+          echo "PODS"
           echo "=========================================="
 
           kubectl get pods \
             -n default \
             -o wide
-
 
       # ----------------------------------------------------------
       # Verify deployment
@@ -355,12 +300,11 @@ jobs:
       - name: Verify deployment
         run: |
           echo "=========================================="
-          echo "Kubernetes Deployment"
+          echo "DEPLOYMENT"
           echo "=========================================="
 
           kubectl get deployment python-app \
             -n default
-
 
       # ----------------------------------------------------------
       # Verify service
@@ -369,15 +313,14 @@ jobs:
       - name: Verify service
         run: |
           echo "=========================================="
-          echo "Kubernetes Service"
+          echo "SERVICE"
           echo "=========================================="
 
           kubectl get service \
             -n default
 
-
       # ----------------------------------------------------------
-      # Final deployment information
+      # Final result
       # ----------------------------------------------------------
 
       - name: Deployment summary
@@ -398,12 +341,3 @@ jobs:
           echo ""
           echo "Service:"
           kubectl get service -n default
-
-          echo ""
-          echo "Image:"
-          kubectl get deployment python-app \
-            -n default \
-            -o jsonpath='{.spec.template.spec.containers[*].image}'
-
-          echo ""
-          echo "=========================================="
