@@ -1,4 +1,4 @@
-name: Build and Deploy Python Application
+name: Build and Deploy to Kubernetes
 
 on:
   push:
@@ -7,66 +7,200 @@ on:
 
   workflow_dispatch:
 
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/python-webapp
+  K8S_NAMESPACE: default
+  K8S_DEPLOYMENT: python-app
+  K8S_CONTAINER: python-app
+
 jobs:
 
-  build-and-deploy:
+  # ==========================================================
+  # BUILD + PUSH TO DOCKER HUB
+  # ==========================================================
 
+  build:
+    name: Build Docker Image
     runs-on: ubuntu-latest
+
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
 
     steps:
 
-    - name: Checkout Source
-      uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Build Docker Image
-      run: |
-        docker build \
-          -t ${{ secrets.DOCKER_USERNAME }}/python-app:${{ github.sha }} \
-          -t ${{ secrets.DOCKER_USERNAME }}/python-app:latest .
+      - name: Build and Push Docker Image
+        id: build-image
+        run: |
 
-    - name: Push Docker Images
-      run: |
-        docker push ${{ secrets.DOCKER_USERNAME }}/python-app:${{ github.sha }}
-        docker push ${{ secrets.DOCKER_USERNAME }}/python-app:latest
+          IMAGE_SHA=$DOCKER_IMAGE:${{ github.sha }}
+          IMAGE_LATEST=$DOCKER_IMAGE:latest
 
-    - name: Copy Kubernetes Files
-      uses: appleboy/scp-action@v0.1.7
-      with:
-        host: ${{ secrets.K8S_MASTER_HOST }}
-        username: ${{ secrets.K8S_MASTER_USER }}
-        key: ${{ secrets.K8S_MASTER_SSH_KEY }}
-        source: "k8s/*"
-        target: "/home/ec2-user/python-app"
+          echo "Building:"
+          echo "$IMAGE_SHA"
 
-    - name: Deploy to Kubernetes
-      uses: appleboy/ssh-action@v1.2.0
-      with:
-        host: ${{ secrets.K8S_MASTER_HOST }}
-        username: ${{ secrets.K8S_MASTER_USER }}
-        key: ${{ secrets.K8S_MASTER_SSH_KEY }}
-        script: |
+          docker build \
+            -t $IMAGE_SHA \
+            -t $IMAGE_LATEST \
+            .
 
-          cd /home/ec2-user/python-app
+          echo "Pushing image..."
 
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
+          docker push $IMAGE_SHA
+          docker push $IMAGE_LATEST
 
-          kubectl set image deployment/python-app \
-          python-app=${{ secrets.DOCKER_USERNAME }}/python-app:${{ github.sha }}
+          echo "image=$IMAGE_SHA" >> "$GITHUB_OUTPUT"
 
-          kubectl rollout status deployment/python-app --timeout=300s
+  # ==========================================================
+  # DEPLOY TO KUBERNETES
+  # ==========================================================
 
-          echo "================ Pods ================"
-          kubectl get pods -o wide
+  deploy:
+    name: Deploy to AWS Kubeadm Kubernetes
+    runs-on: ubuntu-latest
 
-          echo "============== Deployment ============"
-          kubectl get deployment
+    needs: build
 
-          echo "=============== Services ============="
-          kubectl get svc
+    steps:
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------
+      # Install kubectl
+      # ------------------------------------------------------
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      # ------------------------------------------------------
+      # Configure kubeconfig
+      # ------------------------------------------------------
+
+      - name: Configure kubeconfig
+        run: |
+
+          mkdir -p $HOME/.kube
+
+          echo "${{ secrets.KUBE_CONFIG }}" \
+            | base64 --decode \
+            > $HOME/.kube/config
+
+          chmod 600 $HOME/.kube/config
+
+      # ------------------------------------------------------
+      # Test Kubernetes connection
+      # ------------------------------------------------------
+
+      - name: Test Kubernetes connection
+        run: |
+
+          kubectl cluster-info
+
+          echo "================================"
+          echo "Kubernetes Nodes"
+          echo "================================"
+
+          kubectl get nodes -o wide
+
+      # ------------------------------------------------------
+      # Check Kubernetes manifests
+      # ------------------------------------------------------
+
+      - name: Validate Kubernetes manifests
+        run: |
+
+          kubectl apply \
+            --dry-run=client \
+            -f k8s/deployment.yaml
+
+          kubectl apply \
+            --dry-run=client \
+            -f k8s/service.yaml
+
+      # ------------------------------------------------------
+      # Deploy manifests
+      # ------------------------------------------------------
+
+      - name: Deploy Kubernetes manifests
+        run: |
+
+          kubectl apply \
+            -f k8s/deployment.yaml \
+            -n $K8S_NAMESPACE
+
+          kubectl apply \
+            -f k8s/service.yaml \
+            -n $K8S_NAMESPACE
+
+      # ------------------------------------------------------
+      # Update Docker image
+      # ------------------------------------------------------
+
+      - name: Update application image
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+
+        run: |
+
+          echo "Deploying image:"
+          echo "$IMAGE"
+
+          kubectl set image \
+            deployment/$K8S_DEPLOYMENT \
+            $K8S_CONTAINER=$IMAGE \
+            -n $K8S_NAMESPACE
+
+      # ------------------------------------------------------
+      # Wait for deployment
+      # ------------------------------------------------------
+
+      - name: Wait for rollout
+        run: |
+
+          kubectl rollout status \
+            deployment/$K8S_DEPLOYMENT \
+            -n $K8S_NAMESPACE \
+            --timeout=300s
+
+      # ------------------------------------------------------
+      # Verify
+      # ------------------------------------------------------
+
+      - name: Verify deployment
+        run: |
+
+          echo "================================"
+          echo "Deployment"
+          echo "================================"
+
+          kubectl get deployment \
+            $K8S_DEPLOYMENT \
+            -n $K8S_NAMESPACE
+
+          echo ""
+          echo "================================"
+          echo "Pods"
+          echo "================================"
+
+          kubectl get pods \
+            -n $K8S_NAMESPACE \
+            -o wide
+
+          echo ""
+          echo "================================"
+          echo "Services"
+          echo "================================"
+
+          kubectl get svc \
+            -n $K8S_NAMESPACE
