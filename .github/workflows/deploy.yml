@@ -1,40 +1,17 @@
-name: Build and Deploy Python App to AWS Kubeadm Kubernetes
-
-# ============================================================
-# TRIGGERS
-# ============================================================
+name: Deploy Python WebApp to AWS Kubeadm Kubernetes
 
 on:
-
   push:
     branches:
       - main
 
   workflow_dispatch:
 
-
-# ============================================================
-# GLOBAL VARIABLES
-# ============================================================
-
-env:
-
-  # Docker Hub repository
-  DOCKER_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/python-webapp
-
-  # Kubernetes configuration
-  K8S_NAMESPACE: default
-  K8S_DEPLOYMENT: python-app
-  K8S_CONTAINER: python-app
-
-
-# ============================================================
-# JOB 1
-# BUILD DOCKER IMAGE AND PUSH TO DOCKER HUB
-# ============================================================
-
 jobs:
 
+  # ============================================================
+  # BUILD AND PUSH DOCKER IMAGE
+  # ============================================================
   build:
 
     name: Build and Push Docker Image
@@ -42,114 +19,78 @@ jobs:
     runs-on: ubuntu-latest
 
     outputs:
-      image: ${{ steps.build-image.outputs.image }}
+      image: ${{ steps.export-image.outputs.image }}
 
     steps:
 
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Checkout source code
-      # --------------------------------------------------------
-
-      - name: Checkout source code
+      # ----------------------------------------------------------
+      - name: Checkout code
         uses: actions/checkout@v4
 
-
-      # --------------------------------------------------------
-      # Display Docker version
-      # --------------------------------------------------------
-
-      - name: Check Docker version
-        run: |
-          docker --version
-
-
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Login to Docker Hub
-      # --------------------------------------------------------
-
+      # ----------------------------------------------------------
       - name: Login to Docker Hub
         uses: docker/login-action@v3
-
         with:
-
           username: ${{ secrets.DOCKERHUB_USERNAME }}
-
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Build Docker image
-      # --------------------------------------------------------
-
+      # ----------------------------------------------------------
       - name: Build Docker image
-        id: build-image
-
         run: |
+          IMAGE="docker.io/${{ secrets.DOCKERHUB_USERNAME }}/python-webapp"
 
-          echo "=========================================="
+          echo "======================================"
           echo "Building Docker Image"
-          echo "=========================================="
-
-          IMAGE_SHA="$DOCKER_IMAGE:${{ github.sha }}"
-
-          IMAGE_LATEST="$DOCKER_IMAGE:latest"
-
-          echo "Image SHA:"
-          echo "$IMAGE_SHA"
-
-          echo "Image Latest:"
-          echo "$IMAGE_LATEST"
+          echo "======================================"
+          echo "Image: $IMAGE"
+          echo "SHA:   ${{ github.sha }}"
 
           docker build \
-            -t "$IMAGE_SHA" \
-            -t "$IMAGE_LATEST" \
+            -t "$IMAGE:${{ github.sha }}" \
+            -t "$IMAGE:latest" \
             .
 
-
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Push Docker image to Docker Hub
-      # --------------------------------------------------------
-
-      - name: Push Docker image to Docker Hub
-
+      # ----------------------------------------------------------
+      - name: Push Docker image
         run: |
+          IMAGE="docker.io/${{ secrets.DOCKERHUB_USERNAME }}/python-webapp"
 
-          echo "=========================================="
+          echo "======================================"
           echo "Pushing Docker Image"
-          echo "=========================================="
+          echo "======================================"
 
-          IMAGE_SHA="$DOCKER_IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
 
-          IMAGE_LATEST="$DOCKER_IMAGE:latest"
+          echo "Docker image pushed successfully."
 
-          docker push "$IMAGE_SHA"
-
-          docker push "$IMAGE_LATEST"
-
-
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Export image name for deployment job
-      # --------------------------------------------------------
-
-      - name: Export Docker image
-
-        id: build-image
-
+      # ----------------------------------------------------------
+      - name: Export image
+        id: export-image
         run: |
+          IMAGE="docker.io/${{ secrets.DOCKERHUB_USERNAME }}/python-webapp"
 
-          IMAGE_SHA="$DOCKER_IMAGE:${{ github.sha }}"
+          echo "image=$IMAGE:${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
-          echo "image=$IMAGE_SHA" >> "$GITHUB_OUTPUT"
+          echo "======================================"
+          echo "Image:"
+          echo "$IMAGE:${{ github.sha }}"
+          echo "======================================"
 
-          echo "Deployment image:"
-          echo "$IMAGE_SHA"
 
-
-# ============================================================
-# JOB 2
-# DEPLOY TO KUBEADM KUBERNETES
-# ============================================================
-
+  # ============================================================
+  # DEPLOY TO AWS KUBEADM KUBERNETES
+  # ============================================================
   deploy:
 
     name: Deploy to AWS Kubeadm Kubernetes
@@ -159,261 +100,192 @@ jobs:
     needs:
       - build
 
-
     steps:
 
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Checkout repository
-      # --------------------------------------------------------
-
-      - name: Checkout source code
+      # ----------------------------------------------------------
+      - name: Checkout code
         uses: actions/checkout@v4
 
-
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Install kubectl
-      # --------------------------------------------------------
-
+      # ----------------------------------------------------------
       - name: Install kubectl
-
         uses: azure/setup-kubectl@v4
-
         with:
           version: latest
 
-
-      # --------------------------------------------------------
-      # Check kubectl
-      # --------------------------------------------------------
-
-      - name: Check kubectl version
-
+      # ----------------------------------------------------------
+      # Verify kubectl installation
+      # ----------------------------------------------------------
+      - name: Check kubectl
         run: |
-
           kubectl version --client
 
-
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Configure kubeconfig
-      # --------------------------------------------------------
-
+      # ----------------------------------------------------------
       - name: Configure Kubernetes kubeconfig
-
         run: |
-
-          echo "=========================================="
-          echo "Configuring Kubernetes"
-          echo "=========================================="
+          echo "======================================"
+          echo "Configuring Kubernetes kubeconfig"
+          echo "======================================"
 
           mkdir -p "$HOME/.kube"
 
-          echo "${{ secrets.KUBE_CONFIG }}" \
-            | base64 --decode \
-            > "$HOME/.kube/config"
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 --decode > "$HOME/.kube/config"
 
           chmod 600 "$HOME/.kube/config"
 
-          echo "Kubeconfig created."
+          echo "Kubeconfig configured successfully."
 
-
-      # --------------------------------------------------------
+      # ----------------------------------------------------------
       # Test Kubernetes connection
-      # --------------------------------------------------------
-
+      # ----------------------------------------------------------
       - name: Test Kubernetes connection
-
         run: |
-
-          echo "=========================================="
-          echo "Kubernetes Cluster"
-          echo "=========================================="
+          echo "======================================"
+          echo "Kubernetes Cluster Information"
+          echo "======================================"
 
           kubectl cluster-info
 
           echo ""
-
-          echo "=========================================="
+          echo "======================================"
           echo "Kubernetes Nodes"
-          echo "=========================================="
+          echo "======================================"
 
           kubectl get nodes -o wide
 
-
-      # --------------------------------------------------------
-      # Check namespace
-      # --------------------------------------------------------
-
-      - name: Check Kubernetes namespace
-
-        run: |
-
-          kubectl get namespace "$K8S_NAMESPACE"
-
-
-      # --------------------------------------------------------
-      # Validate Kubernetes manifests
-      # --------------------------------------------------------
-
-      - name: Validate Kubernetes manifests
-
-        run: |
-
-          echo "Validating deployment.yaml"
-
-          kubectl apply \
-            --dry-run=client \
-            -f k8s/deployment.yaml
-
-          echo "Validating service.yaml"
-
-          kubectl apply \
-            --dry-run=client \
-            -f k8s/service.yaml
-
-
-      # --------------------------------------------------------
-      # Apply Kubernetes Deployment
-      # --------------------------------------------------------
-
+      # ----------------------------------------------------------
+      # Apply Deployment
+      # ----------------------------------------------------------
       - name: Apply Kubernetes Deployment
-
         run: |
-
-          echo "=========================================="
-          echo "Applying Deployment"
-          echo "=========================================="
+          echo "======================================"
+          echo "Applying Kubernetes Deployment"
+          echo "======================================"
 
           kubectl apply \
             -f k8s/deployment.yaml \
-            -n "$K8S_NAMESPACE"
+            -n default
 
-
-      # --------------------------------------------------------
-      # Apply Kubernetes Service
-      # --------------------------------------------------------
-
+      # ----------------------------------------------------------
+      # Apply Service
+      # ----------------------------------------------------------
       - name: Apply Kubernetes Service
-
         run: |
-
-          echo "=========================================="
-          echo "Applying Service"
-          echo "=========================================="
+          echo "======================================"
+          echo "Applying Kubernetes Service"
+          echo "======================================"
 
           kubectl apply \
             -f k8s/service.yaml \
-            -n "$K8S_NAMESPACE"
+            -n default
 
-
-      # --------------------------------------------------------
-      # Update Docker image
-      # --------------------------------------------------------
-
+      # ----------------------------------------------------------
+      # Update Deployment Image
+      # ----------------------------------------------------------
       - name: Update Docker image
-
         env:
-
           IMAGE: ${{ needs.build.outputs.image }}
 
         run: |
+          echo "======================================"
+          echo "Updating Kubernetes Deployment"
+          echo "======================================"
 
-          echo "=========================================="
-          echo "Updating Kubernetes Image"
-          echo "=========================================="
-
-          echo "Deployment:"
-          echo "$K8S_DEPLOYMENT"
-
-          echo "Container:"
-          echo "$K8S_CONTAINER"
-
-          echo "New Image:"
-          echo "$IMAGE"
+          echo "Deployment: python-app"
+          echo "Container:  python-app"
+          echo "Image:      $IMAGE"
 
           kubectl set image \
-            deployment/"$K8S_DEPLOYMENT" \
-            "$K8S_CONTAINER"="$IMAGE" \
-            -n "$K8S_NAMESPACE"
+            deployment/python-app \
+            python-app="$IMAGE" \
+            -n default
 
-
-      # --------------------------------------------------------
-      # Wait for rollout
-      # --------------------------------------------------------
-
-      - name: Wait for Kubernetes rollout
-
+      # ----------------------------------------------------------
+      # Display deployment image
+      # ----------------------------------------------------------
+      - name: Verify deployment image
         run: |
+          echo "======================================"
+          echo "Current Deployment Image"
+          echo "======================================"
 
-          echo "=========================================="
-          echo "Waiting for Deployment Rollout"
-          echo "=========================================="
+          kubectl get deployment python-app \
+            -n default \
+            -o jsonpath='{.spec.template.spec.containers[*].image}'
+
+          echo ""
+
+      # ----------------------------------------------------------
+      # Wait for rollout
+      # ----------------------------------------------------------
+      - name: Wait for Kubernetes rollout
+        run: |
+          echo "======================================"
+          echo "Waiting for Kubernetes Rollout"
+          echo "======================================"
 
           kubectl rollout status \
-            deployment/"$K8S_DEPLOYMENT" \
-            -n "$K8S_NAMESPACE" \
+            deployment/python-app \
+            -n default \
             --timeout=300s
 
-
-      # --------------------------------------------------------
-      # Verify deployment
-      # --------------------------------------------------------
-
-      - name: Verify Kubernetes deployment
-
+      # ----------------------------------------------------------
+      # Verify Pods
+      # ----------------------------------------------------------
+      - name: Verify Kubernetes Pods
         run: |
-
-          echo ""
-          echo "=========================================="
-          echo "Deployment"
-          echo "=========================================="
-
-          kubectl get deployment \
-            "$K8S_DEPLOYMENT" \
-            -n "$K8S_NAMESPACE"
-
-
-          echo ""
-          echo "=========================================="
-          echo "Pods"
-          echo "=========================================="
+          echo "======================================"
+          echo "Kubernetes Pods"
+          echo "======================================"
 
           kubectl get pods \
-            -n "$K8S_NAMESPACE" \
+            -n default \
             -o wide
 
-
-          echo ""
-          echo "=========================================="
-          echo "Services"
-          echo "=========================================="
-
-          kubectl get services \
-            -n "$K8S_NAMESPACE"
-
-
-          echo ""
-          echo "=========================================="
-          echo "Pod Images"
-          echo "=========================================="
-
-          kubectl get pods \
-            -n "$K8S_NAMESPACE" \
-            -o jsonpath="{range .items[*]}{.metadata.name}{': '}{.spec.containers[*].image}{'\n'}{end}"
-
-
-      # --------------------------------------------------------
-      # Describe deployment if required
-      # --------------------------------------------------------
-
-      - name: Deployment summary
-
+      # ----------------------------------------------------------
+      # Verify Deployment
+      # ----------------------------------------------------------
+      - name: Verify Kubernetes Deployment
         run: |
+          echo "======================================"
+          echo "Kubernetes Deployment"
+          echo "======================================"
 
-          echo "=========================================="
-          echo "Deployment Complete"
-          echo "=========================================="
+          kubectl get deployment python-app \
+            -n default
 
-          kubectl get deployment \
-            "$K8S_DEPLOYMENT" \
-            -n "$K8S_NAMESPACE" \
-            -o wide
+      # ----------------------------------------------------------
+      # Verify Service
+      # ----------------------------------------------------------
+      - name: Verify Kubernetes Service
+        run: |
+          echo "======================================"
+          echo "Kubernetes Service"
+          echo "======================================"
+
+          kubectl get svc \
+            -n default
+
+      # ----------------------------------------------------------
+      # Show final deployed image
+      # ----------------------------------------------------------
+      - name: Show deployed image
+        run: |
+          echo "======================================"
+          echo "FINAL DEPLOYED IMAGE"
+          echo "======================================"
+
+          kubectl get deployment python-app \
+            -n default \
+            -o jsonpath='{.spec.template.spec.containers[*].image}'
+
+          echo ""
+
+          echo "======================================"
+          echo "DEPLOYMENT COMPLETED SUCCESSFULLY"
+          echo "======================================"
